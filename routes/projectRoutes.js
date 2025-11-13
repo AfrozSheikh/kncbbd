@@ -1,63 +1,90 @@
-const express = require('express');
-const multer = require('multer');
-const bcrypt = require('bcryptjs');
-const cloudinary = require('../config/cloudinary');
-const Project = require('../models/Project');
+// routes/projectRoutes.js  (ESM VERSION)
+
+import express from "express";
+import multer from "multer";
+import bcrypt from "bcryptjs";
+import streamifier from "streamifier";
+import cloudinary from "../config/cloudinary.js";
+import Project from "../models/Project.js";
 
 const router = express.Router();
 
-// Set up Multer for handling file uploads
+// Multer memory storage
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// Upload a project
-router.post('/upload', upload.single('image'), async (req, res) => {
+// Helper – Upload buffer to Cloudinary
+function uploadToCloudinary(buffer) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "kodenurons-collaborations",
+        resource_type: "image",
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(buffer).pipe(stream);
+  });
+}
+
+// Upload Project
+router.post("/upload", upload.single("image"), async (req, res) => {
+  try {
     const { title, description, technologiesUsed, password } = req.body;
 
-    // Check password
-    const validPassword = bcrypt.compareSync(password, bcrypt.hashSync(process.env.PASSWORD, 10));
-    if (!validPassword) {
-        return res.status(401).json({ error: 'Invalid password' });
+    if (!title || !description) {
+      return res.status(400).json({ error: "Title & description are required" });
     }
 
-    try {
-        // Upload image to Cloudinary
-        const result = await cloudinary.uploader.upload_stream(
-            { folder: 'kodenurons-collaborations', resource_type: 'image' },
-            async (error, result) => {
-                if (error) {
-                    console.error('Cloudinary Error:', error);
-                    return res.status(500).json({ error: 'Image upload failed' });
-                }
+    // 🔐 FIXED PASSWORD CHECK
+    const isValid = process.env.PASSWORD_HASH
+      ? bcrypt.compareSync(password, process.env.PASSWORD_HASH)
+      : password === process.env.PASSWORD;
 
-                // Save the project to the database
-                const project = new Project({
-                    title,
-                    image: result.secure_url, // Cloudinary URL
-                    description,
-                    technologiesUsed,
-                });
-
-                await project.save();
-                res.status(201).json({ message: 'Project uploaded successfully', project });
-            }
-        );
-
-        // Write the file buffer to the Cloudinary stream
-        result.end(req.file.buffer);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid password" });
     }
+
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: "Image file is required" });
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await uploadToCloudinary(req.file.buffer);
+
+    // Store to MongoDB
+    const project = new Project({
+      title,
+      image: uploadResult.secure_url,
+      description,
+      technologiesUsed: Array.isArray(technologiesUsed)
+        ? technologiesUsed
+        : technologiesUsed?.split(",").map((t) => t.trim()) || [],
+    });
+
+    await project.save();
+
+    res
+      .status(201)
+      .json({ message: "Project uploaded successfully", project });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get all projects
-router.get('/', async (req, res) => {
-    try {
-        const projects = await Project.find();
-        res.json(projects);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+router.get("/", async (req, res) => {
+  try {
+    const projects = await Project.find().sort({ createdAt: -1 });
+    res.json(projects);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 export default router;
