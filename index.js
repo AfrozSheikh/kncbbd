@@ -8,7 +8,7 @@ const morgan = require('morgan');
 const path = require('path');
 
 const projectRoutes = require('./routes/projectRoutes'); // your existing
-const youtubeRoutes = require('../../afroz/kncbbd/routes/youtubeRoutes'); // new
+const youtubeRoutes = require('./routes/youtubeRoutes'); // new
 
 const app = express();
 const __dirname = path.resolve();
