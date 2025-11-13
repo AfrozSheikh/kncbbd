@@ -1,10 +1,27 @@
-// routes/youtubeRoutes.js
-const express = require('express');
-const fetch = require('node-fetch'); // node-fetch@2 (CommonJS)
-const router = express.Router();
+// src/routes/youtubeRoutes.js  (ESM)
+import express from 'express';
 
+const router = express.Router();
 const API_KEY = process.env.YT_API_KEY;
 const DEFAULT_CHANNEL_ID = process.env.YT_CHANNEL_ID || 'UCCpx-Awdsz14iEAsTDTz3ZQ';
+
+// Simple in-memory cache to avoid hitting YouTube quota too often
+// key -> { data: <array>, expiresAt: <timestamp> }
+const cache = new Map();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function getCached(key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+function setCached(key, data) {
+  cache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
 
 // Helper: fetch one page from YouTube
 async function fetchYoutubePage(channelId, pageToken) {
@@ -27,6 +44,10 @@ async function fetchYoutubePage(channelId, pageToken) {
 
 // Fetch ALL videos using paging (will stop when no nextPageToken)
 async function fetchAllVideos(channelId) {
+  const cacheKey = `youtube:${channelId}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
   let allItems = [];
   let nextPageToken = null;
 
@@ -36,9 +57,10 @@ async function fetchAllVideos(channelId) {
 
     allItems = allItems.concat(data.items);
     nextPageToken = data.nextPageToken;
-    // safety: prevent infinite loop
+    // safety: prevent infinite loop (YouTube should stop pages eventually)
   } while (nextPageToken);
 
+  setCached(cacheKey, allItems);
   return allItems;
 }
 
@@ -58,15 +80,16 @@ router.get('/videos', async (req, res) => {
         id: v.id.videoId,
         title: v.snippet?.title || '',
         description: v.snippet?.description || '',
-        thumbnail: v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.default?.url || '',
+        thumbnail: v.snippet?.thumbnails?.high?.url
+          || v.snippet?.thumbnails?.default?.url || '',
         publishedAt: v.snippet?.publishedAt || null,
       }));
 
-    res.json({ videos: formatted, count: formatted.length });
+    res.json({ videos: formatted, count: formatted.length, cached: !!getCached(`youtube:${channelId}`) });
   } catch (err) {
     console.error('YouTube API Fetch Error:', err);
     res.status(500).json({ error: err.message || 'YouTube fetch failed' });
   }
 });
 
-module.exports = router;
+export default router;
